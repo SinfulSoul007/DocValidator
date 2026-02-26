@@ -46,6 +46,10 @@ export async function POST(request: NextRequest): Promise<NextResponse<ApiRespon
 
     const result = await classifyDocument(buffer, file.type);
 
+    console.log(
+      `[classify] label="${result.label}" confidence=${result.confidence} method=${result.extractionMethod} time=${result.processingTimeMs}ms type=${file.type} size=${file.size}`
+    );
+
     return NextResponse.json({ success: true, result });
   } catch (error) {
     console.error("Classification error:", error);
