@@ -1,36 +1,182 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# DocValidator
 
-## Getting Started
+A full-stack Next.js application that classifies uploaded documents in under 5 seconds. Upload a PDF, PNG, or JPG and get an auto-detected document type (e.g. "Electric Bill", "W-2 Tax Form", "Auto Insurance Policy") with a confidence score and reasoning — no predefined categories, the AI figures it out from the content.
 
-First, run the development server:
+Built with Next.js 14+ (App Router), TypeScript, Tailwind CSS, and Claude Haiku 4.5.
+
+## Features
+
+- **Auto-classification** — no fixed category list; Claude analyzes keywords, structure, and context to determine the document type
+- **Two-path extraction** — automatically chooses the fastest method:
+  - Text extraction for native PDFs (~1s)
+  - Vision analysis for scanned PDFs and images (~2-3s)
+- **Accept or dispute** — confirm the classification or submit a correction
+- **Responsive UI** — works on desktop and mobile
+- **Vercel-ready** — serverless, no filesystem dependencies
+
+## Prerequisites
+
+- Node.js 18+
+- An [Anthropic API key](https://console.anthropic.com/)
+
+## Setup
+
+```bash
+git clone https://github.com/SinfulSoul007/DocValidator.git
+cd docvalidator
+npm install
+```
+
+Create your environment file:
+
+```bash
+cp .env.example .env.local
+```
+
+Add your API key to `.env.local`:
+
+```
+ANTHROPIC_API_KEY=sk-ant-your-key-here
+```
+
+Start the dev server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Tech Stack
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Layer | Technology |
+|---|---|
+| Framework | Next.js 16 (App Router) |
+| Language | TypeScript |
+| Styling | Tailwind CSS v4 |
+| PDF text extraction | pdfjs-dist v3 (legacy build, serverless-compatible) |
+| Classification | Claude Haiku 4.5 via `@anthropic-ai/sdk` |
+| Deployment | Vercel (serverless functions) |
 
-## Learn More
+## Project Structure
 
-To learn more about Next.js, take a look at the following resources:
+```
+docvalidator/
+├── app/
+│   ├── layout.tsx                # Root layout with Geist fonts
+│   ├── page.tsx                  # Main page — state machine (idle → processing → result)
+│   ├── globals.css               # Tailwind base styles
+│   └── api/classify/route.ts     # POST endpoint — file validation + classification
+├── components/
+│   ├── DropZone.tsx              # Drag-and-drop upload with spinner
+│   ├── ResultCard.tsx            # Classification result display
+│   └── DisputeForm.tsx           # Correction form
+├── lib/
+│   ├── classifier.ts             # Core logic — three-path classification
+│   ├── extractor.ts              # PDF text extraction via pdfjs-dist
+│   └── prompts.ts                # Classification prompt templates
+├── types/
+│   └── index.ts                  # Shared TypeScript interfaces
+├── next.config.ts                # serverExternalPackages for pdfjs-dist
+├── .env.example
+└── package.json
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Architecture
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```
+              ┌─────────────┐
+              │   Browser    │
+              │  (DropZone)  │
+              └──────┬──────┘
+                     │ POST /api/classify (multipart form, max 4.5MB)
+                     ▼
+          ┌────────────────────┐
+          │   API Route        │
+          │   Validate file    │
+          │   Detect mime type │
+          └──┬─────┬─────┬────┘
+             │     │     │
+     ┌───────┘     │     └────────┐
+     ▼             ▼              ▼
+┌─────────┐ ┌───────────┐ ┌────────────┐
+│ PNG/JPG │ │ Native PDF│ │Scanned PDF │
+│         │ │           │ │            │
+│ base64  │ │ pdfjs-dist│ │ raw PDF    │
+│ encode  │ │ getText() │ │ base64     │
+│         │ │ (2 pages) │ │ encode     │
+└────┬────┘ └─────┬─────┘ └─────┬──────┘
+     │            │              │
+     ▼            ▼              ▼
+┌─────────┐ ┌─────────┐  ┌───────────┐
+│ Claude  │ │ Claude  │  │ Claude    │
+│ Vision  │ │ Text    │  │ Document  │
+│ (image) │ │ (text)  │  │ (PDF)     │
+└────┬────┘ └────┬────┘  └─────┬─────┘
+     │           │              │
+     └───────────┼──────────────┘
+                 ▼
+          ┌────────────┐
+          │ JSON result│
+          │  label     │
+          │  confidence│
+          │  reasoning │
+          └────────────┘
+```
 
-## Deploy on Vercel
+**Path A — Images (~1s):** PNG/JPG files are base64-encoded and sent to Claude's vision API.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+**Path B — Native PDFs (~1s):** Text is extracted from the first 2 pages using pdfjs-dist. If >50 characters are found, the text is sent to Claude for classification.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+**Path C — Scanned PDFs (~2-3s):** If no extractable text is found, the raw PDF is sent directly to Claude as a document block — no OCR or canvas rendering needed.
+
+## API
+
+### `POST /api/classify`
+
+Accepts multipart form data with a single `file` field.
+
+**Constraints:**
+- Max file size: 4.5 MB
+- Accepted types: `application/pdf`, `image/png`, `image/jpeg`
+
+**Success response:**
+
+```json
+{
+  "success": true,
+  "result": {
+    "label": "Electric Bill",
+    "confidence": 0.95,
+    "reasoning": "Document contains utility account number, kWh usage, and amount due from a power company.",
+    "extractionMethod": "text",
+    "processingTimeMs": 1150
+  }
+}
+```
+
+**Error response:**
+
+```json
+{
+  "success": false,
+  "error": "File too large. Maximum size is 4.5MB"
+}
+```
+
+## Deploy to Vercel
+
+1. Push the repo to GitHub
+2. Import the project at [vercel.com/new](https://vercel.com/new)
+3. Add `ANTHROPIC_API_KEY` as an environment variable in Vercel project settings
+4. Deploy
+
+The API route runs as a serverless function with no filesystem dependencies. `pdfjs-dist` is configured as an external server package in `next.config.ts` for proper bundling.
+
+## Configuration
+
+- **Model:** `claude-haiku-4-5-20251001` — fast and cost-effective for classification (configurable in `lib/classifier.ts`)
+- **Max tokens:** 128 — classification responses are small JSON
+- **API timeout:** 6 seconds
+- **Text extraction limit:** first 2 pages, max 3000 characters
+- **File size limit:** 4.5 MB (Vercel serverless payload limit)
